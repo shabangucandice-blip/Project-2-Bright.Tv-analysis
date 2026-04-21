@@ -1,0 +1,482 @@
+select * from `kenzowealth`.`default`.`viewer_11` limit 100;)
+
+-- ==============================================================================
+-- COMPREHENSIVE DATA CLEANING QUERY FOR viewer_11 TABLE
+-- ==============================================================================
+-- This query transforms raw viewer data by:
+-- 1. Converting UTC timestamps to SAST (South African Standard Time)
+-- 2. Separating timestamps into date and time columns
+-- 3. Standardising and normalizing channel names
+-- 4. Trimming whitespace from all string columns
+-- 5. Handling NULL values (converting to 'Unknown')
+-- 6. Handling empty/blank values
+-- 7. Filtering out invalid or test channels
+-- 8. Standardising column names to lowercase with underscores
+-- ==============================================================================
+
+SELECT 
+  -- ==============================================================================
+  -- USER ID CLEANING
+  -- ==============================================================================
+  COALESCE(
+    TRY_CAST(TRIM(CAST(UserID AS STRING)) AS BIGINT), 
+    0
+  ) AS user_id,
+  -- ==============================================================================
+  -- CHANNEL NAME STANDARDISATION
+  -- Normalizes channel names to handle:
+  -- - Case variations (SABC 1, sabc1, Sabc One)
+  -- - Spacing inconsistencies (e-tv, etv, e tv)
+  -- - Brand grouping (Supersport variants under one brand)
+  -- - NULL and empty values converted to 'Unknown'
+  -- ==============================================================================
+  CASE
+    -- Handle NULL or empty channel names
+    WHEN TRIM(COALESCE(Channel2, '')) = '' THEN 'Unknown'
+    
+    -- Supersport brand family consolidation
+    WHEN LOWER(TRIM(Channel2)) IN (
+      'supersport live events',
+      'supersport live',
+      'supersport events',
+      'supersport',
+      'supersport blitz'
+    ) THEN 'Supersport'
+    
+    -- SABC 1 variations
+    WHEN LOWER(TRIM(Channel2)) IN (
+      'sabc 1',
+      'sabc1',
+      'sabc one'
+    ) THEN 'SABC 1'
+    
+    -- SABC 2 variations
+    WHEN LOWER(TRIM(Channel2)) IN (
+      'sabc 2',
+      'sabc2',
+      'sabc two'
+    ) THEN 'SABC 2'
+    
+    -- SABC 3 variations
+    WHEN LOWER(TRIM(Channel2)) IN (
+      'sabc 3',
+      'sabc3',
+      'sabc three'
+    ) THEN 'SABC 3'
+    
+    -- eTV variations
+    WHEN LOWER(TRIM(Channel2)) IN (
+      'etv',
+      'e-tv',
+      'e tv'
+    ) THEN 'eTV'
+    
+    -- Mzansi Magic variations
+    WHEN LOWER(TRIM(Channel2)) IN (
+      'mzansi magic',
+      'mzansi',
+      'mzansi magik'
+    ) THEN 'Mzansi Magic'
+    
+    -- ICC Cricket World Cup variations
+    WHEN LOWER(TRIM(Channel2)) IN (
+      'icc cricket world cup',
+      'icc world cup',
+      'icc cricket wc'
+    ) THEN 'ICC Cricket World Cup'
+    
+    -- All other channels: apply proper capitalization
+    ELSE INITCAP(TRIM(Channel2))
+  END AS channel_name,
+  
+  -- ==============================================================================
+  -- UTC TO SAST TIMESTAMP CONVERSION
+  -- Converts UTC timestamp (RecordDate2) to South African Standard Time (UTC+2)
+  -- Handles NULL values and invalid date formats
+  -- ==============================================================================
+  COALESCE(
+    TO_TIMESTAMP(TRIM(RecordDate2), 'yyyy-MM-dd HH:mm:ss') + INTERVAL 2 HOURS,
+    TO_TIMESTAMP('1900-01-01 00:00:00')  -- Default for invalid dates
+  ) AS record_timestamp_sast,
+  
+  -- ==============================================================================
+  -- DATE EXTRACTION (SAST)
+  -- Extracts only the date portion in SAST timezone
+  -- Converts NULL to 'Unknown'
+  -- ==============================================================================
+  COALESCE(
+    DATE_FORMAT(
+      TO_TIMESTAMP(TRIM(RecordDate2), 'yyyy-MM-dd HH:mm:ss') + INTERVAL 2 HOURS,
+      'yyyy-MM-dd'
+    ),
+    'Unknown'
+  ) AS record_date_sast,
+  
+  -- ==============================================================================
+  -- TIME EXTRACTION (SAST)
+  -- Extracts only the time portion in SAST timezone
+  -- Converts NULL to 'Unknown'
+  -- ==============================================================================
+  COALESCE(
+    DATE_FORMAT(
+      TO_TIMESTAMP(TRIM(RecordDate2), 'yyyy-MM-dd HH:mm:ss') + INTERVAL 2 HOURS,
+      'HH:mm:ss'
+    ),
+    'Unknown'
+  ) AS record_time_sast,
+  
+  -- ==============================================================================
+  -- Handles NULL and empty values
+  -- ==============================================================================
+  CASE 
+    WHEN TRIM(COALESCE(record_sast, '')) = '' THEN 'Unknown'
+    ELSE TRIM(record_sast)
+  END AS record_sast_original,
+  
+  -- ==============================================================================
+  -- DURATION FORMATTING
+  -- Converts Duration 2 timestamp to HH:mm:ss format
+  -- Handles NULL values
+  -- ==============================================================================
+  COALESCE(
+    DATE_FORMAT(`Duration 2`, 'HH:mm:ss'),
+    '00:00:00'
+  ) AS duration_hms,
+  
+  -- ==============================================================================
+  -- WATCH DURATION IN SECONDS
+  -- Converts duration to total seconds for analytics
+  -- Useful for calculating total watch time
+  -- ==============================================================================
+  COALESCE(
+    UNIX_TIMESTAMP(`Duration 2`) - UNIX_TIMESTAMP('1970-01-01 00:00:00'),
+    0
+  ) AS watch_seconds
+
+FROM `kenzowealth`.`default`.`viewer_11`
+
+-- ==============================================================================
+-- DATA QUALITY FILTERS
+-- Excludes records that should not be included in analysis:
+-- - Invalid/test channels (break in transmission, test events)
+-- - Rare/temporary channels (wimbledon, sawsee)
+-- - NULL or empty channel names
+-- ==============================================================================
+WHERE 
+  -- Exclude specific invalid channels
+  LOWER(TRIM(COALESCE(Channel2, ''))) NOT IN (
+    'break in transmission',
+    'dstv events 1',
+    ''
+  )
+  -- Ensure channel name is not NULL
+  AND TRIM(COALESCE(Channel2, '')) <> ''
+  AND Channel2 IS NOT NULL
+  
+-- ==============================================================================
+-- DEDUPLICATION
+-- Groups by all key fields to remove duplicate records
+-- ==============================================================================
+GROUP BY 
+  user_id,
+  channel_name,
+  record_timestamp_sast,
+  record_date_sast,
+  record_time_sast,
+  record_sast_original,
+  duration_hms,
+  watch_seconds
+
+-- ==============================================================================
+-- SORTING
+-- Orders results by timestamp and user for easier analysis
+-- ==============================================================================
+ORDER BY 
+  record_timestamp_sast DESC,
+  user_id;
+
+------------------------------------------------------------------------------------------------------------
+Basic Hygiene on my Subscriber table
+--------------------------------------------------------------------------------------------------------------
+
+-- ==============================================================================
+-- COMPREHENSIVE DATA CLEANING QUERY FOR subscriber_10 TABLE
+-- ==============================================================================
+-- This query transforms raw subscriber data by:
+-- 1. Handling NULL and invalid values across all columns
+-- 2. Standardising names with proper capitalization
+-- 3. Normalizing gender and race values
+-- 4. Validating age ranges (0-120 reasonable range)
+-- 5. Standardising South African province names
+-- 6. Removing duplicates based on UserID
+-- 7. Converting column names to lowercase with underscores
+-- ==============================================================================
+
+WITH base_cleaning AS (
+  SELECT 
+    -- ==============================================================================
+    -- USER ID CLEANING
+    -- Ensures UserID is valid and not null
+    -- ==============================================================================
+    COALESCE(
+      TRY_CAST(UserID AS BIGINT),
+      0
+    ) AS user_id,
+    
+    -- ==============================================================================
+    -- NAME STANDARDIZATION
+    -- Trims whitespace and applies proper capitalisation
+    -- Handles NULL and empty values
+    -- ==============================================================================
+    CASE
+      WHEN TRIM(COALESCE(Name, '')) = '' THEN 'Unknown'
+      WHEN TRIM(COALESCE(Name, '')) = 'NULL' THEN 'Unknown'
+      ELSE INITCAP(TRIM(Name))
+    END AS first_name,
+    
+    -- ==============================================================================
+    -- SURNAME STANDARDISATION
+    -- Trims whitespace and applies proper capitalization
+    -- Handles NULL and empty values
+    -- ==============================================================================
+    CASE
+      WHEN TRIM(COALESCE(Surname, '')) = '' THEN 'Unknown'
+      WHEN TRIM(COALESCE(Surname, '')) = 'NULL' THEN 'Unknown'
+      ELSE INITCAP(TRIM(Surname))
+    END AS last_name,
+    
+    -- ==============================================================================
+    -- GENDER STANDARDISATION
+    -- Normalises gender values to consistent format
+    -- Handles variations like M/Male, F/Female, etc.
+    -- ==============================================================================
+    CASE
+      WHEN UPPER(TRIM(COALESCE(Gender, ''))) IN ('M', 'MALE', 'MAN', 'BOY') THEN 'Male'
+      WHEN UPPER(TRIM(COALESCE(Gender, ''))) IN ('F', 'FEMALE', 'WOMAN', 'GIRL') THEN 'Female'
+      WHEN UPPER(TRIM(COALESCE(Gender, ''))) IN ('O', 'OTHER', 'NON-BINARY', 'NONBINARY') THEN 'Other'
+      WHEN TRIM(COALESCE(Gender, '')) = '' THEN 'Unknown'
+      ELSE 'Unknown'
+    END AS gender,
+    
+    -- ==============================================================================
+    -- RACE STANDARDISATION
+    -- Normalizes South African racial categories
+    -- Handles common variations and misspellings
+    -- ==============================================================================
+    CASE
+      WHEN LOWER(TRIM(COALESCE(Race, ''))) IN ('black', 'african', 'black african') THEN 'Black African'
+      WHEN LOWER(TRIM(COALESCE(Race, ''))) IN ('white', 'caucasian') THEN 'White'
+      WHEN LOWER(TRIM(COALESCE(Race, ''))) IN ('coloured', 'colored', 'mixed race') THEN 'Coloured'
+      WHEN LOWER(TRIM(COALESCE(Race, ''))) IN ('indian', 'asian', 'indian/asian') THEN 'Indian/Asian'
+      WHEN LOWER(TRIM(COALESCE(Race, ''))) IN ('chinese') THEN 'Chinese'
+      WHEN LOWER(TRIM(COALESCE(Race, ''))) IN ('other', 'mixed') THEN 'Other'
+      WHEN TRIM(COALESCE(Race, '')) = '' THEN 'Unknown'
+      ELSE INITCAP(TRIM(Race))
+    END AS race,
+    
+    -- ==============================================================================
+    -- AGE VALIDATION
+    -- Ensures age is within reasonable range (0-120)
+    -- Handles NULL and invalid values
+    -- ==============================================================================
+    CASE
+      WHEN Age IS NULL THEN -1
+      WHEN Age < 0 THEN -1
+      WHEN Age > 120 THEN -1  -- Flag unrealistic ages
+      ELSE Age
+    END AS age,
+    
+    -- ==============================================================================
+    -- AGE GROUP CATEGORISATION
+    -- Creates age groups for demographic analysis
+    -- ==============================================================================
+    CASE
+      WHEN Age IS NULL OR Age < 0 OR Age > 120 THEN 'Unknown'
+      WHEN Age >= 0 AND Age <= 12 THEN 'Child (0-12)'
+      WHEN Age >= 13 AND Age <= 17 THEN 'Teen (13-17)'
+      WHEN Age >= 18 AND Age <= 24 THEN 'Young Adult (18-24)'
+      WHEN Age >= 25 AND Age <= 34 THEN 'Adult (25-34)'
+      WHEN Age >= 35 AND Age <= 44 THEN 'Adult (35-44)'
+      WHEN Age >= 45 AND Age <= 54 THEN 'Middle Age (45-54)'
+      WHEN Age >= 55 AND Age <= 64 THEN 'Senior (55-64)'
+      WHEN Age >= 65 THEN 'Elderly (65+)'
+      ELSE 'Unknown'
+    END AS age_group,
+    
+    -- ==============================================================================
+    -- PROVINCE STANDARDISATION
+    -- Normalises South African province names
+    -- Handles abbreviations and common variations
+    -- ==============================================================================
+    CASE
+      -- Gauteng variations
+      WHEN LOWER(TRIM(COALESCE(Province, ''))) IN ('gauteng', 'gp', 'gauteng province', 'gt', 'jhb', 'johannesburg', 'pretoria') THEN 'Gauteng'
+      
+      -- Western Cape variations
+      WHEN LOWER(TRIM(COALESCE(Province, ''))) IN ('western cape', 'wc', 'w cape', 'cape town', 'cpt') THEN 'Western Cape'
+      
+      -- KwaZulu-Natal variations
+      WHEN LOWER(TRIM(COALESCE(Province, ''))) IN ('kwazulu-natal', 'kzn', 'kwazulu natal', 'durban', 'natal') THEN 'KwaZulu-Natal'
+      
+      -- Eastern Cape variations
+      WHEN LOWER(TRIM(COALESCE(Province, ''))) IN ('eastern cape', 'ec', 'e cape', 'east london', 'port elizabeth') THEN 'Eastern Cape'
+      
+      -- Limpopo variations
+      WHEN LOWER(TRIM(COALESCE(Province, ''))) IN ('limpopo', 'lp', 'northern province', 'polokwane') THEN 'Limpopo'
+      
+      -- Mpumalanga variations
+      WHEN LOWER(TRIM(COALESCE(Province, ''))) IN ('mpumalanga', 'mp', 'nelspruit', 'mbombela') THEN 'Mpumalanga'
+      
+      -- North West variations
+      WHEN LOWER(TRIM(COALESCE(Province, ''))) IN ('north west', 'nw', 'northwest', 'north-west', 'mahikeng') THEN 'North West'
+      
+      -- Free State variations
+      WHEN LOWER(TRIM(COALESCE(Province, ''))) IN ('free state', 'fs', 'freestate', 'bloemfontein') THEN 'Free State'
+      
+      -- Northern Cape variations
+      WHEN LOWER(TRIM(COALESCE(Province, ''))) IN ('northern cape', 'nc', 'n cape', 'kimberley') THEN 'Northern Cape'
+      
+      -- Handle NULL and unknown
+      WHEN TRIM(COALESCE(Province, '')) = '' THEN 'Unknown'
+      
+      -- Keep original if already standardized
+      ELSE INITCAP(TRIM(Province))
+    END AS province
+    
+  FROM `kenzowealth`.`default`.`subscriber_10`
+),
+
+-- ==============================================================================
+-- Removes duplicate UserIDs, keeping the first occurrence
+-- ==============================================================================
+deduplicated AS (
+  SELECT
+    *,
+    ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY user_id) AS row_num
+  FROM base_cleaning
+  WHERE user_id > 0  -- Exclude invalid UserIDs
+)
+
+-- ==============================================================================
+-- FINAL SELECT WITH DATA QUALITY FILTERS
+-- ==============================================================================
+SELECT
+  user_id,
+  first_name,
+  last_name,
+  gender,
+  race,
+  age,
+  age_group,
+  province
+FROM deduplicated
+WHERE 
+  row_num = 1  -- Keep only first occurrence of each UserID
+  AND first_name <> 'Unknown'  -- Exclude records with no name
+  AND last_name <> 'Unknown'   -- Exclude records with no surname
+  
+-- ==============================================================================
+-- SORTING
+-- Orders by user_id for easier reference
+-- ==============================================================================
+ORDER BY user_id;
+
+
+-- ==============================================================================
+-- DATA QUALITY SUMMARY (Run separately to check results)
+-- ==============================================================================
+-- SELECT 
+--   COUNT(*) as total_records,
+--   COUNT(DISTINCT user_id) as unique_users,
+--   SUM(CASE WHEN gender = 'Unknown' THEN 1 ELSE 0 END) as unknown_gender,
+--   SUM(CASE WHEN race = 'Unknown' THEN 1 ELSE 0 END) as unknown_race,
+--   SUM(CASE WHEN age = -1 THEN 1 ELSE 0 END) as invalid_age,
+--   SUM(CASE WHEN province = 'Unknown' THEN 1 ELSE 0 END) as unknown_province
+
+
+
+-----------------------------------------------------------------------------
+Joined my tables using left join 
+-----------------------------------------------------------------------------
+
+select * from `workspace`.`default`.`Ishe_an_view` limit 100;
+select * from `workspace`.`default`.`Ishe_subscribers0` limit 100;
+
+select 
+  --Join my tables using left join (Base table.
+  v.*,
+  s.Age,
+  s.Province,
+  s.Race,
+  s.Gender
+from `workspace`.`default`.`Ishe_an_view` v
+left join `workspace`.`default`.`Ishe_subscribers0` s
+  on v.UserID = s.UserID;
+
+
+-----------------------------------------------------------------------------
+
+SELECT 
+  v.UserID,
+  v.Channel2 as Channel,
+  v.record_date_sast,
+  v.record_time_sast,
+  
+  -- Keep original HH:MM:SS format for Excel pivoting
+  v.`Duration 2` as Duration,
+  
+  -- Subscriber Demographics (with NULL handling)
+  COALESCE(s.Age, 32) as Age,
+  COALESCE(s.Province, 'unkown') as Province,
+  COALESCE(s.Race, 'Other') as Race,
+  COALESCE(s.Gender, 'Unknown') as Gender,
+  
+  -- Date/Time Enrichments
+  TO_DATE(v.record_date_sast, 'd-MMM-yyyy') as Record_Date,
+  DATE_FORMAT(TO_DATE(v.record_date_sast, 'd-MMM-yyyy'), 'EEEE') as Day_of_Week,
+  DATE_FORMAT(TO_DATE(v.record_date_sast, 'd-MMM-yyyy'), 'MMMM') as Month_Name,
+  
+  -- Time Buckets
+  CASE 
+    WHEN CAST(SUBSTRING(v.record_time_sast, 1, 2) AS INT) BETWEEN 5 AND 11 THEN '1. Morning (5AM-11AM)'
+    WHEN CAST(SUBSTRING(v.record_time_sast, 1, 2) AS INT) BETWEEN 12 AND 16 THEN '2. Afternoon (12PM-4PM)'
+    WHEN CAST(SUBSTRING(v.record_time_sast, 1, 2) AS INT) BETWEEN 17 AND 21 THEN '3. Evening (5PM-9PM)'
+    ELSE '4. Night (10PM-4AM)'
+  END as Time_Bucket,
+  
+  -- Age Bands (with NULL handling)
+  CASE 
+    WHEN s.Age IS NULL THEN '8. Unknown'
+    WHEN s.Age < 18 THEN 'Minors. Under 18'
+    WHEN s.Age BETWEEN 18 AND 24 THEN 'Young adults. 18-24' 
+    WHEN s.Age BETWEEN 25 AND 34 THEN 'Millennials. 25-34'
+    WHEN s.Age BETWEEN 35 AND 44 THEN 'Established. 35-44'
+    WHEN s.Age BETWEEN 45 AND 54 THEN 'Mature adults. 45-54'
+    WHEN s.Age BETWEEN 55 AND 64 THEN 'Pre-retirement. 55-64'
+    WHEN s.Age BETWEEN 65 AND 89 THEN 'Retirement. 65-89'
+    WHEN s.Age BETWEEN 90 AND 114 THEN 'Golden'
+    ELSE '8. Unknown'
+  END as Age_Band,
+  
+  -- Weekend Flag
+  CASE 
+    WHEN DAYOFWEEK(TO_DATE(v.record_date_sast, 'd-MMM-yyyy')) IN (1, 7) THEN 'Weekend'
+    ELSE 'Weekday'
+  END as Day_Type
+
+FROM `workspace`.`default`.`Ishe_an_view` v
+LEFT JOIN `workspace`.`default`.`Ishe_subscribers0` s
+  ON v.UserID = s.UserID;
+
+
+
+
+
+
+
+
+
+
+
+
+
