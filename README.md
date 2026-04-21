@@ -25,7 +25,7 @@ Granular Session Analysis: Consumption was modeled at the individual session lev
 
 Feature Engineering: Analysis of user profiles merged with viewership transactions to identify correlation between user segments and content preferences.
 
-🛠 Tech resources and tools :
+ Tech resources and tools :
 
 Data Processing: SQL
 
